@@ -199,6 +199,10 @@ def extract_content(file_name):
     fd = open(file_name, 'rb')
     if not fd:
         printing.ERROR("Failed to open input file, error code, stopping")
+    # check file size and return empty string if 0
+    if not os.path.getsize(file_name):
+        fd.close()
+        return b""
     content = bytearray(fd.read())
     if not content:
         printing.ERROR("Unable to read data from the file %s" % file_name)
@@ -257,3 +261,30 @@ def locate_diffs(data1, data2, length):
             if f_loc == -1: f_loc = i
             l_loc = i
     return f_loc, l_loc
+
+
+# source of this function
+#https://stackoverflow.com/questions/18092354/python-split-string-without-splitting-escaped-character
+def split_unescape(s, delim, escape='\\', unescape=True):
+    ret = []
+    current = []
+    itr = iter(s)
+    for ch in itr:
+        if ch == escape:
+            try:
+                # skip the next character; it has been escaped!
+                if not unescape:
+                    current.append(escape)
+                current.append(next(itr))
+            except StopIteration:
+                if unescape:
+                    current.append(escape)
+        elif ch == delim:
+            # split! (add current to the list and reset it)
+            ret.append(''.join(current))
+            current = []
+        else:
+            current.append(ch)
+    ret.append(''.join(current))
+    return ret
+

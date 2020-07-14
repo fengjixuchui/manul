@@ -605,6 +605,10 @@ class Fuzzer:
             final_string = "".join(self.target_binary_path)
             if self.cmd_fuzzing:
                 target_file_path = extract_content(target_file_path)  # now it is the file content
+                target_file_path = target_file_path.decode("utf-8", "replace")
+                target_file_path = target_file_path.replace('\x00', '')
+                max_length = os.sysconf('SC_ARG_MAX')  - len(final_string) - 3 # the last 2 is @@
+                target_file_path = target_file_path[:max_length]
 
             if not is_net:
                 final_string = final_string.replace("@@", target_file_path)
@@ -834,9 +838,12 @@ class Fuzzer:
                 if self.cmd_fuzzing:
                     try:
                         err_code, err_output = self.command.run(cmd)
-                    except TypeError:
-                        WARNING("Failed to send this input over command line into the target")
-                        continue
+                    except OSError as e:
+                        if e.errno == 7:
+                            WARNING(self.log_file, "Failed to send this input over command line into the target, input too long")
+                            continue
+                        else:
+                            ERROR("Failed to execute command, error:", e)
                 else:
                     err_code, err_output = self.command.run(cmd)
 
@@ -867,7 +874,7 @@ class Fuzzer:
             self.stats_array[i] = v
 
     def is_problem_with_config(self, exc_code, err_output):
-        if exc_code == 127 or exc_code == 126:  # command not found or permissions
+        if (exc_code == 127 or exc_code == 126) and not self.cmd_fuzzing:  # command not found or permissions
             ERROR("Thread %d unable to execute target. Bash return %s" % (self.fuzzer_id, err_output))
         elif exc_code == 124:  # timeout
             WARNING(self.log_file, "Target failed to finish execution within given timeout, try to increase default timeout")
@@ -1039,9 +1046,12 @@ class Fuzzer:
                     if self.cmd_fuzzing:
                         try:
                             exc_code, err_output = self.command.run(cmd)
-                        except TypeError:
-                            WARNING("Failed to give this input from bash into the target")
-                            continue
+                        except OSError as e:
+                            if e.errno == 7:
+                                WARNING(self.log_file, "Failed to send this input over command line into the target, input too long")
+                                continue
+                            else:
+                                ERROR("Failed to execute command, error:", e)
                     else:
                         exc_code, err_output = self.command.run(cmd)
 
@@ -1377,11 +1387,12 @@ def parse_args():
     parser.add_argument("--disable_volatile_bytes", default = None, action = 'store_true', help = argparse.SUPPRESS)
     parser.add_argument("--stop_after_nseconds", default = 0.0, type=int, help = argparse.SUPPRESS)
     parser.add_argument("--forkserver_on", default = False, action = 'store_true', help = argparse.SUPPRESS)
-
+    parser.add_argument("--skip_binary_check", default = False, action = 'store_true', help = argparse.SUPPRESS)
 
     parser.add_argument('target_binary', nargs='*', help="The target binary and options to be executed (quotes needed e.g. \"target -png @@\")")
 
     args = parser.parse_args()
+
     additional_args = parse_config(args.config)
     # A little hack here. We actually adding commands from config to cmd string and then parse it all together.
     final_cmd_to_parse = "%s %s" % (" ".join(sys.argv[1:-1]), additional_args)
@@ -1433,15 +1444,16 @@ if __name__ == "__main__":
     printing.DEBUG_PRINT = args.debug
 
     binary_to_check = args.target_binary[0]
-    target_binary = binary_to_check.split(" ")[0]  # here we assume that our path to binary doesn't have spaces
+    target_binary = split_unescape(binary_to_check, ' ', '\\')[0]
 
     dbi_setup = None
     if args.dbi is not None:
         dbi_setup = configure_dbi(args, target_binary, args.debug)
 
-    check_binary(target_binary)  # check if our binary exists and is actually instrumented
+    if not args.skip_binary_check:
+        check_binary(target_binary)  # check if our binary exists and is actually instrumented
 
-    if not args.simple_mode and args.dbi is None and not check_instrumentation(target_binary):
+    if not args.simple_mode and args.dbi is None and not args.skip_binary_check and not check_instrumentation(target_binary):
         ERROR("Failed to find afl's instrumentation in the target binary, try to recompile or run manul in dumb mode")
 
     if not os.path.isdir(args.input):
@@ -1470,6 +1482,8 @@ if __name__ == "__main__":
         radamsa_path = radamsa_path.replace("manul.py", "")
         if sys.platform == "win32":
             radamsa_path = radamsa_path + "radamsa.exe"
+        elif sys.platform == "darwin":
+            radamsa_path = "radamsa"
         else:
             radamsa_path = radamsa_path + "./libradamsa/libradamsa.so"
         INFO(1, None, None, "Full relative path to radamsa %s" % radamsa_path)
